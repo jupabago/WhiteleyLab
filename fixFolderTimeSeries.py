@@ -2,8 +2,6 @@
 import os
 import shutil
 
-def hello():
-    print "hello world!"
 #def copy():
 #    for root, dirs, files in os.walk('set1'):
 #        for name in files:
