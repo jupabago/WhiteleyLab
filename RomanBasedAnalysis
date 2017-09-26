@@ -1,0 +1,163 @@
+---
+title: "Occupancy Analysis based on Roman’s script"
+author: "Juan P Barraza"
+date: "9/20/2017"
+output: html_document
+---
+```{r setup, include=FALSE}
+
+library(rdist)
+library(pixmap)
+library(rtiff)
+library(reshape2)
+library(gplots)
+library(dplyr)
+library(plyr)
+
+rm(list = ls())
+
+#### 1. THE SETUP
+#### some metadata info needed here
+# what is the xy dimension in pixels
+side <- 512
+```
+
+```{r thresholding, include=FALSE}
+#### 2. LOAD AND THRESHOLD IMAGES
+# get the files
+rm(list = ls())
+
+files <- dir(getwd(), recursive = T)
+tif <- files[grep("tif", files)]
+# split into channels
+c1_files <- tif[grep("c1", tif)]
+c2_files <- tif[grep("c2", tif)]
+
+# load em up channel1 (green/Sg)
+c1 <- array(0, c(side, side, length(c1_files)))
+
+for(i in 1:length(c1_files)){
+	print(paste("loading ch1...", i, "/", length(c1_files), c1_files[i]))
+  c1[,,i]<-readTiff(c1_files[i])@green
+    }
+# loop to threshold a stack
+c1_t <- array(0, c(side, side, length(c1_files)))
+for(i in 1:dim(c1)[3]){
+	print(paste("thresholding ch1...", i, "/", length(c1_files), c1_files[i]))
+    th <- autoThreshold(c1[,,i], mean(c1[,,i]))[2]
+    c1_t[,,i][c1[,,i] > th] <- 1 
+}
+# load em up channel2 (red/Aa)
+c2 <- array(0, c(side, side, length(c2_files)))
+for(i in 1:length(c2_files)){
+	print(paste("loading ch2...", i, "/", length(c2_files), c2_files[i]))
+	c2[,,i] <- readTiff(c2_files[i])@red
+}
+# loop to threshold a stack
+c2_t <- array(0, c(side, side, length(c2_files)))
+for(i in 1:dim(c2)[3]){
+	print(paste("thresholding ch1...", i, "/", length(c2_files), c2_files[i]))
+    th <- autoThreshold(c2[,,i], mean(c2[,,i]))[2]
+    c2_t[,,i][c2[,,i] > th] <- 1 
+}
+```
+
+```{r functions, include=FALSE}
+
+correctSampleVolume<-function(thresholdedImage, xytotal, ztotal, xydim, zdim){#this limits the boundaries of voxel sampling to prevent going out of bounds
+   correctedImage<- thresholdedImage[  thresholdedImage$x >= xydim & thresholdedImage$x <= (xytotal-xydim) &
+                                       thresholdedImage$y >= xydim & thresholdedImage$y <= (xytotal-xydim) &
+                                       thresholdedImage$z >= zdim & thresholdedImage$z <= (ztotal-zdim),]
+   return(correctedImage)
+}
+
+idVoxel<-function(thresholdedImage){#this makes a df with the coordinates from all voxel objects
+  dfVoxelCoords <- data.frame(which(thresholdedImage == 1, T))
+  colnames(dfVoxelCoords) <- c("x", "y", "z")
+  return(dfVoxelCoords)
+}
+
+sampleVoxels<-function(voxelsCoords, sampleSize){#randomly samples non-empty voxels from a thresholded image
+  sampledVoxels <- sample(1:dim(voxelsCoords)[1], size = sampleSize)
+  sampleVoxelsCoords <- correctedTestImageCoords[sampledVoxels,]
+  return(sampleVoxelsCoords)
+}
+
+distanceBox<-function(focus,thresholdedImage, xydim, zdim, xyscale, zscale){#takes a voxel and collects all the surrounding voxels within the specified box
+  #input of xydim and zdim is in voxels
+  outbox<-thresholdedImage[(focus$x-xydim):(focus$x+xydim), (focus$y-xydim):(focus$y+xydim), (focus$z-zdim):(focus$z+zdim)]
+  outboxCoords<-(idVoxel(outbox))#find non-empty voxels in box
+  outboxCoords<-outboxCoords-1#move to the orignin
+  outboxCoords$x<-outboxCoords$x*xyscale#convert pixels to real lengths
+  outboxCoords$y<-outboxCoords$y*xyscale
+  outboxCoords$z<-outboxCoords$z*zscale
+  distances<-as.data.frame(t(cdist(t(as.matrix(c(xydim*xyscale, xydim*xyscale, zdim*zscale))), as.matrix(outboxCoords))))
+  return(distances)
+}
+  
+binning<-function(dfDistances){#takes the list of pairwise distances between focus and object in box and outputs frequency density table binned by distances of 2 uM
+  numDistances<-apply(dfDistances,1,as.numeric)#turn input df into numeric so hist() works
+  bins<-seq(0, max(dfDistances)+2,2)#establish the binning
+  histogram<-hist(numDistances, breaks = bins)
+  densityTable<-as.data.frame(histogram$density*2)
+  return(cbind(histogram$mids, densityTable))
+}
+
+loopVoxels<-function(voxelsList, thresholdedImage, xyBoxDim, zBoxDim, xyScale, zScale ){
+  loopBox<-list()
+  for (i in 1:length(voxelsList[[1]])){
+    loopBox[[i]]<-binning(distanceBox(voxelsList[i,],thresholdedImage, xyBoxDim, zBoxDim, xyScale, zScale))
+    }
+  return(loopBox)
+}
+
+```
+
+```{r testAnalysis, include=FALSE}
+
+testImage <- array(0, c(256, 256, 9))
+testImage[,,1]<-readTiff("square.tiff")@red
+testImage[,,2] <-readTiff("square.tiff")@red
+testImage[,,3] <-readTiff("square.tiff")@red
+testImage[,,4] <-readTiff("square.tiff")@red
+testImage[,,5] <-readTiff("square.tiff")@red
+testImage[,,6] <-readTiff("square.tiff")@red
+testImage[,,7] <-readTiff("square.tiff")@red
+testImage[,,8] <-readTiff("square.tiff")@red
+testImage[,,9] <-readTiff("square.tiff")@red
+
+xysize<-256
+xydimSearch<-20
+zsize<-9
+zdimSearch<-3
+xyRealDim<-4
+zRealDim<-10
+sampleSize<-100
+
+
+testImageCoords <- idVoxel(testImage)
+correctedTestImageCoords<-correctSampleVolume(testImageCoords, xysize, zsize, xydimSearch, zdimSearch)
+testSampleVoxels<-sampleVoxels(correctedTestImageCoords, sampleSize)
+testLoopVoxels<-loopVoxels(testSampleVoxels, testImage, xydimSearch, zdimSearch, xyRealDim, zRealDim)
+testMergeLoop<-Reduce(function(dtf1,dtf2) merge(dtf1,dtf2, by= "histogram$mids",all = TRUE),testLoopVoxels)
+finalData<-cbind(testMergeLoop[1],rowMeans(testMergeLoop[c(-1)],na.rm = TRUE), apply(testMergeLoop[c(-1)], 1, sd,na.rm = TRUE))
+colnames(finalData)<- c('distance', 'mean', 'SD')
+
+#this is to test individual voxels
+testDistanceBox1<-distanceBox(testSampleVoxels[1,],testImage, xydimSearch, zdimSearch,xyRealDim,zRealDim)
+testDistanceBox2<-distanceBox(testSampleVoxels[2,],testImage, xydimSearch, zdimSearch,xyRealDim,zRealDim)
+testDistanceBox3<-distanceBox(testSampleVoxels[3,],testImage, xydimSearch, zdimSearch,xyRealDim,zRealDim)
+testBinning1<-binning(testDistanceBox1)
+testBinning2<-binning(testDistanceBox2)
+testBinning3<-binning(testDistanceBox3)
+testListBinning<-list()
+testListBinning[[1]]<- testBinning1
+testListBinning[[2]]<- testBinning2
+testListBinning[[3]]<- testBinning3
+
+```
+
+```{r Comments, include=FALSE}
+#identify the role of NA in the calculations
+
+```
